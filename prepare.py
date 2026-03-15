@@ -60,14 +60,22 @@ def get_dataloaders(
     dataset_name: str = DATASET,
     image_size: int = IMAGE_SIZE,
     batch_size: int = 64,
+    train_transform: transforms.Compose | None = None,
+    num_workers: int = 0,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Download (if needed) and return train/val/test DataLoaders for a MedMNIST+ dataset.
 
     Args:
-        dataset_name: MedMNIST dataset identifier (e.g. ``"chestmnist"``).
-        image_size:   Spatial resolution; 28 or 224.
-        batch_size:   Number of samples per mini-batch.
+        dataset_name:    MedMNIST dataset identifier (e.g. ``"chestmnist"``).
+        image_size:      Spatial resolution; 28 or 224.
+        batch_size:      Number of samples per mini-batch.
+        train_transform: Optional custom transform for the training split. When
+                         ``None`` a default normalisation transform is used.
+                         Eval transforms are always the default (no augmentation).
+        num_workers:     Number of DataLoader worker processes. Defaults to 0
+                         (main-process loading) for cross-platform compatibility.
+                         Increase on Linux/macOS for faster data loading.
 
     Returns:
         Tuple of (train_loader, val_loader, test_loader).
@@ -82,41 +90,40 @@ def get_dataloaders(
     info = INFO[dataset_name]
     DataClass = getattr(medmnist, info["python_class"])
 
-    # Build transforms
+    # Normalisation parameters depend on number of channels (greyscale vs RGB)
+    n_channels: int = info["n_channels"]
+    norm_mean = [0.5] * n_channels
+    norm_std = [0.5] * n_channels
+
+    # Default eval transform (never augmented)
     if image_size == 28:
-        train_tf = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
-            ]
-        )
         eval_tf = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
+                transforms.Normalize(mean=norm_mean, std=norm_std),
             ]
         )
     else:
-        train_tf = transforms.Compose(
-            [
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
-            ]
-        )
         eval_tf = transforms.Compose(
             [
                 transforms.Resize((224, 224)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
+                transforms.Normalize(mean=norm_mean, std=norm_std),
             ]
         )
 
+    # Train transform: use caller-supplied override or fall back to eval_tf
+    if train_transform is not None:
+        train_tf = train_transform
+    else:
+        train_tf = eval_tf
+
     logger.info(
-        "Preparing dataset=%s image_size=%d batch_size=%d",
+        "Preparing dataset=%s image_size=%d batch_size=%d n_channels=%d",
         dataset_name,
         image_size,
         batch_size,
+        n_channels,
     )
 
     size_kwarg = {"size": image_size} if image_size != 28 else {}
@@ -132,8 +139,8 @@ def get_dataloaders(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
         generator=g,
         drop_last=True,
     )
@@ -141,15 +148,15 @@ def get_dataloaders(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
     test_loader = DataLoader(
         test_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
 
     logger.info(
@@ -202,7 +209,12 @@ def evaluate(
         images = images.to(device, non_blocking=True)
         logits = model(images)
         all_logits.append(logits.cpu().numpy())
-        all_labels.append(labels.numpy())
+        all_labels.append(
+            labels.cpu().numpy()
+        )  # .cpu() required for pinned-memory tensors
+
+    if not all_logits:
+        return {"auc": float("nan"), "accuracy": float("nan")}
 
     logits_np = np.concatenate(all_logits, axis=0)  # (N, C)
     labels_np = np.concatenate(all_labels, axis=0)  # (N, C) or (N, 1)
@@ -239,8 +251,10 @@ def evaluate(
         auc = float("nan")
 
     # Accuracy
+    # Multi-label: exact-match (per-sample all labels must match).
+    # Multi-class: standard per-sample accuracy.
     if is_multilabel:
-        acc = accuracy_score(flat_labels.flatten(), flat_preds.flatten())
+        acc = float((flat_preds == flat_labels).all(axis=1).mean())
     else:
         acc = accuracy_score(flat_labels, flat_preds)
 

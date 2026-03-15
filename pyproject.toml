@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
 [project]
 name = "autoresearch-medical"
 version = "0.1.0"
@@ -11,5 +15,9 @@ dependencies = [
     "scikit-learn",
     "matplotlib",
     "numpy",
-    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
 ]

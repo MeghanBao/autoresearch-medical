@@ -67,9 +67,15 @@ def build_model(num_classes: int, pretrained: bool = PRETRAINED) -> nn.Module:
     weights = models.ResNet18_Weights.DEFAULT if pretrained else None
     model = models.resnet18(weights=weights)
 
-    # Adapt for 1-channel (greyscale) MedMNIST images when not using 224px pretrained
-    # Note: only swap conv1 when image is 28x28 to preserve pretrained weights otherwise
+    # Adapt for 1-channel (greyscale) MedMNIST images at 28×28 resolution.
+    # conv1 is replaced with a stride-1, 3×3 kernel to avoid over-downsampling
+    # tiny images, and maxpool is removed for the same reason.
+    # WARNING: this discards the pretrained conv1 weights (first layer is re-initialised).
     if IMAGE_SIZE == 28:
+        if pretrained:
+            logger.warning(
+                "conv1 replaced for greyscale 28×28 input — pretrained conv1 weights discarded"
+            )
         model.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
         model.maxpool = nn.Identity()
 
@@ -80,11 +86,13 @@ def build_model(num_classes: int, pretrained: bool = PRETRAINED) -> nn.Module:
 # ---------------------------------------------------------------------------
 # === DATA AUGMENTATION (agent can modify) ===
 # ---------------------------------------------------------------------------
-# Augmentation is currently handled in prepare.py get_dataloaders().
-# To add augmentation: import transforms here and pass custom_train_transform
-# to get_dataloaders() — or modify the transforms inside prepare.py.
+# Pass a custom torchvision transform via the train_transform argument of
+# get_dataloaders() below.  The eval transform is always fixed (no augmentation).
+# Make sure Normalize uses the correct number of channels for the dataset:
+#   greyscale datasets (chestmnist, pneumoniamnist, breastmnist, octmnist): mean/std length 1
+#   RGB datasets (pathmnist, dermamnist, bloodmnist, tissuemnist, organ*):  mean/std length 3
 #
-# Example (uncomment and extend as desired):
+# Example (uncomment and pass as train_transform=TRAIN_TRANSFORM):
 #
 # from torchvision import transforms
 # TRAIN_TRANSFORM = transforms.Compose([
@@ -92,8 +100,9 @@ def build_model(num_classes: int, pretrained: bool = PRETRAINED) -> nn.Module:
 #     transforms.RandomRotation(15),
 #     transforms.ColorJitter(brightness=0.2, contrast=0.2),
 #     transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.5], std=[0.5]),
+#     transforms.Normalize(mean=[0.5], std=[0.5]),   # adjust channels as needed
 # ])
+TRAIN_TRANSFORM = None  # set to a transforms.Compose to override default
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +127,8 @@ train_loader, val_loader, _ = get_dataloaders(
     dataset_name=DATASET,
     image_size=IMAGE_SIZE,
     batch_size=BATCH_SIZE,
+    train_transform=TRAIN_TRANSFORM,
+    num_workers=0,  # 0 = main-process loading; safe on all platforms
 )
 
 # ---------------------------------------------------------------------------
@@ -210,10 +221,13 @@ while True:
 
 logger.info("Training complete. Running final evaluation...")
 
+# Record training end time BEFORE evaluation so train_time excludes eval overhead
+t_train_end = time.time()
+train_time = t_train_end - t_train_start
+
 val_metrics = evaluate(model, val_loader, num_classes=num_classes, device=device)
 
 total_time = time.time() - t_start
-train_time = time.time() - t_train_start
 
 logger.info("---")
 logger.info("val_auc:          %.6f", val_metrics["auc"])

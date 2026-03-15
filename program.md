@@ -74,9 +74,13 @@ LOOP FOREVER:
 4. `git commit`
 5. Run: `python train.py > run.log 2>&1`
 6. Read results: `grep "val_auc\|val_acc" run.log`
-7. If val_auc improved → keep the commit. If not → `git reset --hard HEAD~1`
-8. Record results in `results.tsv` (do NOT commit this file)
+7. Compare new `val_auc` against the **all-time best accepted val_auc** (track this yourself from `results.tsv`):
+   - If new val_auc > best → **keep** the commit
+   - If new val_auc ≤ best, or val_auc is `nan` → **revert**: `git reset --hard HEAD~1`
+8. Record results in `results.tsv` (do NOT commit this file — it is in `.gitignore`)
 9. Repeat
+
+**NaN val_auc**: If `val_auc` is `nan`, treat as a crash — log status `crash`, revert, and move on.
 
 **NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. Run until manually interrupted.
 
