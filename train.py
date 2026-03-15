@@ -153,7 +153,7 @@ logger.info(
     "num_classes=%d  n_channels=%d  multilabel=%s", num_classes, n_channels, multilabel
 )
 
-train_loader, val_loader, _ = get_dataloaders(
+train_loader, val_loader, test_loader = get_dataloaders(
     dataset_name=DATASET,
     image_size=IMAGE_SIZE,
     batch_size=BATCH_SIZE,
@@ -254,13 +254,18 @@ logger.info("Training complete. Running final evaluation...")
 t_train_end = time.time()
 train_time = t_train_end - t_train_start
 
+# val: used by agent to decide keep/revert
+# test: held-out final number; do NOT use to guide experiment decisions
 val_metrics = evaluate(model, val_loader, num_classes=num_classes, device=device)
+test_metrics = evaluate(model, test_loader, num_classes=num_classes, device=device)
 
 total_time = time.time() - t_start
 
 logger.info("---")
 logger.info("val_auc:          %.6f", val_metrics["auc"])
 logger.info("val_acc:          %.6f", val_metrics["accuracy"])
+logger.info("test_auc:         %.6f", test_metrics["auc"])
+logger.info("test_acc:         %.6f", test_metrics["accuracy"])
 logger.info("training_seconds: %.1f", train_time)
 logger.info("total_seconds:    %.1f", total_time)
 logger.info("num_steps:        %d", step)
