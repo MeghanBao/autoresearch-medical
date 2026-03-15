@@ -89,11 +89,12 @@ All 12 MedMNIST+ datasets are supported. Set `DATASET=<name>`:
 
 ## Experiment Results
 
-*Results will be filled in as experiments run.*
+| Iteration | Dataset | val_auc | val_acc | test_auc | Steps | Epochs | Status | Description |
+|---|---|---|---|---|---|---|---|---|
+| 0 | ChestMNIST 28×28 | 0.7716 | 0.5376 | 0.7715 | 6,143 | 6 | ✅ baseline | ResNet-18, from scratch, AdamW, lr=1e-3, batch=128, T4 GPU, 5min budget |
 
-| Commit | Dataset | val_auc | val_acc | Status | Description |
-|---|---|---|---|---|---|
-| — | chestmnist | — | — | — | baseline (ResNet-18, 28×28, pretrained) |
+> Baseline trained on Google Colab T4 GPU (16GB VRAM, 440MB used). Training budget: 5 minutes wall clock.
+> Reference: xAILab Bamberg reports ResNet-18 (from scratch) AUC ~0.76-0.78 on ChestMNIST 28×28 (Doerrich et al., Scientific Reports 2025).
 
 ## References
 
