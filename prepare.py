@@ -271,6 +271,11 @@ def get_num_classes(dataset_name: str = DATASET) -> int:
     return len(INFO[dataset_name]["label"])
 
 
+def get_n_channels(dataset_name: str = DATASET) -> int:
+    """Return the number of image channels (1 = greyscale, 3 = RGB) for *dataset_name*."""
+    return INFO[dataset_name]["n_channels"]
+
+
 def is_multilabel(dataset_name: str = DATASET) -> bool:
     """Return True if *dataset_name* is a multi-label classification task."""
     return INFO[dataset_name]["task"] == "multi-label, binary-class"

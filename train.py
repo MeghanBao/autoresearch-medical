@@ -24,6 +24,7 @@ from prepare import (
     TRAIN_TIME_MINUTES,
     evaluate,
     get_dataloaders,
+    get_n_channels,
     get_num_classes,
     is_multilabel,
 )
@@ -53,31 +54,57 @@ PRETRAINED: bool = True  # use ImageNet pretrained weights
 # ---------------------------------------------------------------------------
 
 
-def build_model(num_classes: int, pretrained: bool = PRETRAINED) -> nn.Module:
+def build_model(
+    num_classes: int,
+    n_channels: int,
+    image_size: int,
+    pretrained: bool = PRETRAINED,
+) -> nn.Module:
     """
-    Build ResNet-18 with a modified final layer for *num_classes* outputs.
+    Build ResNet-18 with a modified first and last layer for *num_classes* outputs.
+
+    Handles both greyscale (1-channel) and RGB (3-channel) datasets at 28×28 and
+    224×224 resolutions. The correct adaptation is determined by *n_channels* and
+    *image_size*, not by assuming all datasets share the same modality.
+
+    Adaptations applied:
+    - Greyscale (n_channels=1): conv1 in_channels changed to 1.
+    - 28×28 resolution: conv1 kernel/stride reduced to 3×3/1 and maxpool removed
+      to prevent the feature map collapsing on tiny images.
+    - WARNING: any modification to conv1 discards the pretrained conv1 weights.
 
     Args:
         num_classes: Number of output logits (labels for multi-label, classes for multi-class).
+        n_channels:  Number of input image channels (1 = greyscale, 3 = RGB).
+        image_size:  Spatial resolution of input images (28 or 224).
         pretrained:  If True, load ImageNet pretrained weights.
 
     Returns:
-        A ``torchvision`` ResNet-18 model with adapted ``fc`` layer.
+        A ``torchvision`` ResNet-18 model with adapted ``conv1`` and ``fc`` layers.
     """
     weights = models.ResNet18_Weights.DEFAULT if pretrained else None
     model = models.resnet18(weights=weights)
 
-    # Adapt for 1-channel (greyscale) MedMNIST images at 28×28 resolution.
-    # conv1 is replaced with a stride-1, 3×3 kernel to avoid over-downsampling
-    # tiny images, and maxpool is removed for the same reason.
-    # WARNING: this discards the pretrained conv1 weights (first layer is re-initialised).
-    if IMAGE_SIZE == 28:
+    modify_conv1 = (n_channels != 3) or (image_size == 28)
+
+    if modify_conv1:
         if pretrained:
             logger.warning(
-                "conv1 replaced for greyscale 28×28 input — pretrained conv1 weights discarded"
+                "conv1 replaced (n_channels=%d, image_size=%d) — pretrained conv1 weights discarded",
+                n_channels,
+                image_size,
             )
-        model.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        model.maxpool = nn.Identity()
+        # stride=1 + no maxpool prevents over-downsampling at 28×28;
+        # for 224×224 greyscale we keep the original stride=2 / maxpool.
+        if image_size == 28:
+            model.conv1 = nn.Conv2d(
+                n_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+            )
+            model.maxpool = nn.Identity()
+        else:
+            model.conv1 = nn.Conv2d(
+                n_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+            )
 
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
@@ -120,8 +147,11 @@ logger.info("Device: %s", device)
 logger.info("Dataset: %s  image_size: %d", DATASET, IMAGE_SIZE)
 
 num_classes = get_num_classes(DATASET)
+n_channels = get_n_channels(DATASET)
 multilabel = is_multilabel(DATASET)
-logger.info("num_classes=%d  multilabel=%s", num_classes, multilabel)
+logger.info(
+    "num_classes=%d  n_channels=%d  multilabel=%s", num_classes, n_channels, multilabel
+)
 
 train_loader, val_loader, _ = get_dataloaders(
     dataset_name=DATASET,
@@ -135,7 +165,12 @@ train_loader, val_loader, _ = get_dataloaders(
 # === OPTIMIZER & SCHEDULER (agent can modify) ===
 # ---------------------------------------------------------------------------
 
-model = build_model(num_classes=num_classes, pretrained=PRETRAINED).to(device)
+model = build_model(
+    num_classes=num_classes,
+    n_channels=n_channels,
+    image_size=IMAGE_SIZE,
+    pretrained=PRETRAINED,
+).to(device)
 
 optimizer = torch.optim.AdamW(
     model.parameters(),
@@ -143,10 +178,11 @@ optimizer = torch.optim.AdamW(
     weight_decay=WEIGHT_DECAY,
 )
 
-# T_max is a placeholder; reset each epoch so scheduler tracks relative progress
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+# Cosine LR schedule with warm restarts every epoch.
+# T_0=len(train_loader) means one full cosine period = one epoch.
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer,
-    T_max=len(train_loader),
+    T_0=len(train_loader),
     eta_min=LEARNING_RATE * 0.01,
 )
 
@@ -204,13 +240,6 @@ while True:
 
         if elapsed >= TIME_BUDGET_SECONDS:
             break
-
-    # Reset scheduler T_max for the next epoch so LR cosine restarts
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=len(train_loader),
-        eta_min=LEARNING_RATE * 0.01,
-    )
 
     if time.time() - t_train_start >= TIME_BUDGET_SECONDS:
         break
